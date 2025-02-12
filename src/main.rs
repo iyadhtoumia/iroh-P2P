@@ -1,5 +1,3 @@
-```rust
-
 use std::{collections::HashMap, fmt, str::FromStr};
 use anyhow::Result;
 use clap::Parser;
@@ -10,38 +8,49 @@ use iroh_gossip::{
     proto::TopicId,
 };
 use serde::{Deserialize, Serialize};
-use mdns_sd::{ServiceDaemon, ServiceEvent}; 
+use mdns_sd::{ServiceDaemon, ServiceEvent};
 
 #[derive(Parser, Debug)]
 struct Args {
-
     #[clap(short, long)]
     name: Option<String>,
-    
+
     #[clap(short, long, default_value = "0")]
     bind_port: u16,
-    
+
     #[clap(subcommand)]
     command: Command,
 }
 
-
 #[derive(Parser, Debug)]
 enum Command {
-    
     Open,
-    
-    Join {
-        
-        ticket: String,
-    },
+    Join { ticket: String },
 }
 
-#[tokio::main] 
-async fn main() -> Result<()> {
-    let args = Args::parse(); 
+#[derive(Debug, Serialize, Deserialize)]
+struct Ticket {
+    topic: TopicId,
+    nodes: Vec<NodeAddr>,
+}
 
-    
+impl FromStr for Ticket {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        serde_json::from_str(s).map_err(Into::into)
+    }
+}
+
+impl fmt::Display for Ticket {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", serde_json::to_string(self).expect("serialization should not fail"))
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let args = Args::parse();
     let (topic, nodes) = match &args.command {
         Command::Open => {
             let topic = TopicId::from_bytes(rand::random());
@@ -55,7 +64,10 @@ async fn main() -> Result<()> {
         }
     };
 
-    let endpoint = Endpoint::builder().discovery().bind().await?;
+    let endpoint = Endpoint::builder()
+        .discovery(Box::new(iroh::discovery::Static::default()))
+        .bind()
+        .await?;
     println!("> our node id: {}", endpoint.node_id());
 
     let mdns = ServiceDaemon::new()?;
@@ -89,7 +101,7 @@ async fn main() -> Result<()> {
     let (sender, receiver) = gossip.subscribe_and_join(topic, node_ids).await?.split();
     println!("> connected!");
 
-    if let Some(name) = args.name {
+    if let Some(name) = args.name.clone() {
         let message = Message::AboutMe {
             from: endpoint.node_id(),
             name,
@@ -111,6 +123,7 @@ async fn main() -> Result<()> {
         sender.broadcast(message.to_vec().into()).await?;
         println!("> sent: {text}");
     }
+
     router.shutdown().await?;
     Ok(())
 }
@@ -132,7 +145,7 @@ impl Message {
 }
 
 async fn subscribe_loop(mut receiver: GossipReceiver) -> Result<()> {
-    let mut names = HashMap::new(); 
+    let mut names = HashMap::new();
     while let Some(event) = receiver.try_next().await? {
         if let Event::Gossip(GossipEvent::Received(msg)) = event {
             match Message::from_bytes(&msg.content)? {
@@ -150,4 +163,14 @@ async fn subscribe_loop(mut receiver: GossipReceiver) -> Result<()> {
     Ok(())
 }
 
-
+fn input_loop(tx: tokio::sync::mpsc::Sender<String>) {
+    let stdin = std::io::stdin();
+    let mut buffer = String::new();
+    while let Ok(_) = stdin.read_line(&mut buffer) {
+        let text = buffer.trim().to_string();
+        if tx.blocking_send(text).is_err() {
+            break;
+        }
+        buffer.clear();
+    }
+}
