@@ -2,13 +2,12 @@ use std::{collections::HashMap, fmt, str::FromStr};
 use anyhow::Result;
 use clap::Parser;
 use futures_lite::StreamExt;
-use iroh::{protocol::Router, Endpoint, NodeAddr, NodeId};
+use iroh::{discovery::{dns::DnsDiscovery, local_swarm_discovery::LocalSwarmDiscovery, ConcurrentDiscovery}, protocol::Router, Endpoint, NodeAddr, NodeId, SecretKey};
 use iroh_gossip::{
     net::{Event, Gossip, GossipEvent, GossipReceiver},
     proto::TopicId,
 };
 use serde::{Deserialize, Serialize};
-use mdns_sd::{ServiceDaemon, ServiceEvent};
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -64,15 +63,19 @@ async fn main() -> Result<()> {
         }
     };
 
+    let secret_key = SecretKey::generate(rand::rngs::OsRng);
+    
+    let discovery = ConcurrentDiscovery::from_services(vec![
+        Box::new(DnsDiscovery::n0_dns()),
+        Box::new(LocalSwarmDiscovery::new(secret_key.public())?),
+        // Box::new(DhtDiscvoery::new(secret_key.public())?),
+    ]);
+    
     let endpoint = Endpoint::builder()
-        .discovery(Box::new(iroh::discovery::Static::default()))
+        .discovery(Box::new(discovery))
         .bind()
         .await?;
     println!("> our node id: {}", endpoint.node_id());
-
-    let mdns = ServiceDaemon::new()?;
-    mdns.register("iroh-chat", "_iroh._tcp", 1200, &[])?;
-    println!("> mDNS discovery enabled for local network");
 
     let gossip = Gossip::builder().spawn(endpoint.clone()).await?;
 
@@ -166,7 +169,7 @@ async fn subscribe_loop(mut receiver: GossipReceiver) -> Result<()> {
 fn input_loop(tx: tokio::sync::mpsc::Sender<String>) {
     let stdin = std::io::stdin();
     let mut buffer = String::new();
-    while let Ok(_) = stdin.read_line(&mut buffer) {
+    while stdin.read_line(&mut buffer).is_ok() {
         let text = buffer.trim().to_string();
         if tx.blocking_send(text).is_err() {
             break;
