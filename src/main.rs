@@ -2,12 +2,31 @@ use std::{collections::HashMap, fmt, str::FromStr};
 use anyhow::Result;
 use clap::Parser;
 use futures_lite::StreamExt;
-use iroh::{discovery::{dns::DnsDiscovery, local_swarm_discovery::LocalSwarmDiscovery, ConcurrentDiscovery}, protocol::Router, Endpoint, NodeAddr, NodeId, SecretKey};
+use reqwest::Client; // To make HTTP requests to OpenHAB
+use iroh::{
+    discovery::{dns::DnsDiscovery, local_swarm_discovery::LocalSwarmDiscovery, ConcurrentDiscovery},
+    protocol::Router, Endpoint, NodeAddr, NodeId, SecretKey,
+};
 use iroh_gossip::{
     net::{Event, Gossip, GossipEvent, GossipReceiver},
     proto::TopicId,
 };
 use serde::{Deserialize, Serialize};
+
+// Function to retrieve OpenHAB item state
+pub async fn get_item_state() -> Result<String> {
+    let client = Client::new();
+    let url = "http://192.168.247.59:8080/rest/items/TestItem"; // Corrected URL
+    let response = client
+        .get(url)
+        .header("Accept", "application/json")
+        .send()
+        .await?
+        .text()
+        .await?;
+
+    Ok(response)
+}
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -43,8 +62,12 @@ impl FromStr for Ticket {
 
 impl fmt::Display for Ticket {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", serde_json::to_string(self).expect("serialization should not fail"))
+        write!(f, "Node ID: {}", self.nodes[0].node_id)
     }
+}
+
+fn simplify_ticket(ticket: &Ticket) -> String {
+    ticket.nodes[0].node_id.to_string()
 }
 
 #[tokio::main]
@@ -68,7 +91,6 @@ async fn main() -> Result<()> {
     let discovery = ConcurrentDiscovery::from_services(vec![
         Box::new(DnsDiscovery::n0_dns()),
         Box::new(LocalSwarmDiscovery::new(secret_key.public())?),
-        // Box::new(DhtDiscvoery::new(secret_key.public())?),
     ]);
     
     let endpoint = Endpoint::builder()
@@ -89,8 +111,8 @@ async fn main() -> Result<()> {
         let nodes = vec![me];
         Ticket { topic, nodes }
     };
-    println!("> ticket to join us: {ticket}");
-
+    println!("> ticket to join us: {}", simplify_ticket(&ticket));
+    
     let node_ids = nodes.iter().map(|p| p.node_id).collect();
     if nodes.is_empty() {
         println!("> waiting for nodes to join us...");
@@ -119,12 +141,16 @@ async fn main() -> Result<()> {
 
     println!("> type a message and hit enter to broadcast...");
     while let Some(text) = line_rx.recv().await {
+        // Fetch the state of the OpenHAB item
+        let openhab_state = get_item_state().await.unwrap_or_else(|_| "Error fetching state".to_string());
+
+        // Send message with OpenHAB state
         let message = Message::Message {
             from: endpoint.node_id(),
-            text: text.clone(),
+            text: format!("{} - OpenHAB state: {}", text, openhab_state),
         };
         sender.broadcast(message.to_vec().into()).await?;
-        println!("> sent: {text}");
+        println!("> sent: {text} - OpenHAB state: {openhab_state}");
     }
 
     router.shutdown().await?;
@@ -157,8 +183,12 @@ async fn subscribe_loop(mut receiver: GossipReceiver) -> Result<()> {
                     println!("> {} is now known as {}", from.fmt_short(), name);
                 }
                 Message::Message { from, text } => {
+                    // Fetch OpenHAB state when receiving a message
+                    let openhab_state = get_item_state().await.unwrap_or_else(|_| "Error fetching state".to_string());
+
+                    // Print received message with OpenHAB state
                     let name = names.get(&from).map_or_else(|| from.fmt_short(), String::to_string);
-                    println!("{}: {}", name, text);
+                    println!("{}: {} - OpenHAB state: {}", name, text, openhab_state);
                 }
             }
         }
