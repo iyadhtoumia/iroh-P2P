@@ -2,7 +2,7 @@ use std::{collections::HashMap, fmt, str::FromStr};
 use anyhow::Result;
 use clap::Parser;
 use futures_lite::StreamExt;
-use reqwest::Client; // To make HTTP requests to OpenHAB
+use reqwest::Client; 
 use iroh::{
     discovery::{dns::DnsDiscovery, local_swarm_discovery::LocalSwarmDiscovery, ConcurrentDiscovery},
     protocol::Router, Endpoint, NodeAddr, NodeId, SecretKey,
@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 // Function to retrieve OpenHAB item state
 pub async fn get_item_state() -> Result<String> {
     let client = Client::new();
-    let url = "http://192.168.247.59:8080/rest/items/TestItem"; // Corrected URL
+    let url = "http://192.168.38.59:8080/rest/items/TestItem"; 
     let response = client
         .get(url)
         .header("Accept", "application/json")
@@ -111,7 +111,8 @@ async fn main() -> Result<()> {
         let nodes = vec![me];
         Ticket { topic, nodes }
     };
-    println!("> ticket to join us: {}", simplify_ticket(&ticket));
+    let ticket_str = serde_json::to_string(&ticket)?;
+    println!("> ticket to join us: {}", ticket_str);
     
     let node_ids = nodes.iter().map(|p| p.node_id).collect();
     if nodes.is_empty() {
